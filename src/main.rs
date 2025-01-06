@@ -9,7 +9,7 @@ use std::mem::zeroed;
 use opencv::{core::{self, Mat, MatTraitConst, Point, Scalar, Vector, BORDER_DEFAULT}, highgui, imgcodecs, imgproc, prelude::*};
 use std::time::Instant;
 use opencv::boxed_ref::BoxedRef;
-use opencv::core::{Rect, Rect_, Vec3b};
+use opencv::core::{Rect, Vec3b};
 
 const BGR_VALUES: [[i32; 3]; 4] = [
     [81, 78, 244],   // pointer
@@ -161,14 +161,14 @@ fn filter_image_by_bgr(image: &Mat, bgr_values: &[[i32; 3]; 4], tolerance: i32) 
 
     for bgr in bgr_values {
         let lower_bound = Vector::from_slice(&[
-            (bgr[0] as i32 - tolerance).max(0) as u8,
-            (bgr[1] as i32 - tolerance).max(0) as u8,
-            (bgr[2] as i32 - tolerance).max(0) as u8,
+            (bgr[0] - tolerance).max(0) as u8,
+            (bgr[1] - tolerance).max(0) as u8,
+            (bgr[2] - tolerance).max(0) as u8,
         ]);
         let upper_bound = Vector::from_slice(&[
-            (bgr[0] as i32 + tolerance).min(255) as u8,
-            (bgr[1] as i32 + tolerance).min(255) as u8,
-            (bgr[2] as i32 + tolerance).min(255) as u8,
+            (bgr[0] + tolerance).min(255) as u8,
+            (bgr[1] + tolerance).min(255) as u8,
+            (bgr[2] + tolerance).min(255) as u8,
         ]);
 
         let mut temp_mask = Mat::default();
@@ -291,6 +291,28 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
     Ok(None)
 }
 
+fn infer_regions(mut bar: Vec<usize>) -> Vec<usize> {
+    let len = bar.len();
+
+    for i in 0..len {
+        if bar[i] == 9 {
+            let left = if i > 0 { bar[i - 1] } else { 3 };
+            let right = if i < len - 1 { bar[i + 1] } else { 3 };
+            
+            bar[i] = match (left, right) {
+                (l, r) if l != 9 && r != 9 && l != 0 && r != 0 => {
+                    if l == r { l } else { 3 }
+                }
+                (l, _) if l != 9 && l != 0 => l,
+                (_, r) if r != 9 && r != 0 => r,
+                _ => 3,
+            };
+        }
+    }
+
+    bar
+}
+
 fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
     let image = screenshot()?;
     let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
@@ -313,6 +335,8 @@ fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
             pixels.push(9);
         }
     }
+    
+    pixels = infer_regions(pixels);
 
     Ok(pixels)
 }
