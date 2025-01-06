@@ -4,3 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+opencv = {version = "0.93.5"}
+winapi = {version = "0.3.9", features = ["windef", "wingdi", "winuser"] }
