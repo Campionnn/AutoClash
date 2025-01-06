@@ -282,7 +282,7 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
             if bgr_counts[0] > (0.001 * area as f32) as i32 && // pointer
                 bgr_counts[1] > (0.01 * area as f32) as i32 && // click_perfect
                 bgr_counts[2] > (0.03 * area as f32) as i32 && // click_good
-                bgr_counts[3] > (0.4 * area as f32) as i32 {   // click_bad 
+                bgr_counts[3] > (0.4 * area as f32) as i32 {   // click_bad
                 return Ok(Some((rect.x, rect.y, rect.width, rect.height)));
             }
         }
@@ -291,26 +291,132 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
     Ok(None)
 }
 
-fn infer_regions(mut bar: Vec<usize>) -> Vec<usize> {
-    let len = bar.len();
+fn infer_regions(mut sequence: Vec<usize>) -> Vec<usize> {
+    let mut changed = true;
 
-    for i in 0..len {
-        if bar[i] == 9 {
-            let left = if i > 0 { bar[i - 1] } else { 3 };
-            let right = if i < len - 1 { bar[i + 1] } else { 3 };
-            
-            bar[i] = match (left, right) {
-                (l, r) if l != 9 && r != 9 && l != 0 && r != 0 => {
-                    if l == r { l } else { 3 }
+    // Keep iterating until no more changes can be made
+    while changed {
+        changed = false;
+        let len = sequence.len();
+        let mut updates: Vec<(usize, usize)> = Vec::new();
+
+        // Handle edges first if they contain 9's
+        if sequence[0] == 9 {
+            // Find first non-9 value from left
+            for i in 1..len {
+                if sequence[i] != 9 {
+                    updates.push((0, sequence[i]));
+                    changed = true;
+                    break;
                 }
-                (l, _) if l != 9 && l != 0 => l,
-                (_, r) if r != 9 && r != 0 => r,
-                _ => 3,
-            };
+            }
+        }
+
+        if sequence[len-1] == 9 {
+            // Find first non-9 value from right
+            for i in (0..len-1).rev() {
+                if sequence[i] != 9 {
+                    updates.push((len-1, sequence[i]));
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        // Scan through the sequence looking for 9's
+        let mut i = 1;
+        while i < len-1 {
+            if sequence[i] == 9 {
+                // Count consecutive 9's
+                let mut nine_count = 1;
+                let start_pos = i;
+                while i + nine_count < len && sequence[i + nine_count] == 9 {
+                    nine_count += 1;
+                }
+
+                // Handle single 9
+                if nine_count == 1 {
+                    // Look left for the nearest non-9 value
+                    for j in (0..start_pos).rev() {
+                        if sequence[j] != 9 {
+                            updates.push((start_pos, sequence[j]));
+                            changed = true;
+                            break;
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+
+                // Find left and right values for groups of 9's
+                let mut left_value = None;
+                let mut right_value = None;
+
+                // Look left
+                for j in (0..start_pos).rev() {
+                    if sequence[j] != 9 {
+                        left_value = Some(sequence[j]);
+                        break;
+                    }
+                }
+
+                // Look right
+                for j in (start_pos + nine_count)..len {
+                    if sequence[j] != 9 {
+                        right_value = Some(sequence[j]);
+                        break;
+                    }
+                }
+
+                // Fill in values based on available sides
+                match (left_value, right_value) {
+                    (Some(left), Some(right)) => {
+                        // For odd number of 9's, fill all but the last one
+                        let fill_count = if nine_count % 2 == 1 {
+                            nine_count - 1
+                        } else {
+                            nine_count
+                        };
+
+                        let mid_point = start_pos + fill_count / 2;
+
+                        // Fill from left to midpoint
+                        for j in start_pos..mid_point {
+                            updates.push((j, left));
+                            changed = true;
+                        }
+
+                        // Fill from right to midpoint (if even count)
+                        if nine_count % 2 == 0 {
+                            for j in mid_point..start_pos + fill_count {
+                                updates.push((j, right));
+                                changed = true;
+                            }
+                        }
+                    },
+                    (Some(value), None) | (None, Some(value)) => {
+                        // If only one side has a value, use it for all positions
+                        for j in 0..nine_count {
+                            updates.push((start_pos + j, value));
+                            changed = true;
+                        }
+                    },
+                    (None, None) => {} // Can't infer any values
+                }
+
+                i += nine_count;
+                continue;
+            }
+            i += 1;
+        }
+
+        // Apply all updates after scanning
+        for (index, value) in updates {
+            sequence[index] = value;
         }
     }
 
-    bar
+    sequence
 }
 
 fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
@@ -335,7 +441,7 @@ fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
             pixels.push(9);
         }
     }
-    
+
     pixels = infer_regions(pixels);
 
     Ok(pixels)
