@@ -11,6 +11,13 @@ use std::time::Instant;
 use opencv::boxed_ref::BoxedRef;
 use opencv::core::{Rect, Rect_, Vec3b};
 
+const BGR_VALUES: [[i32; 3]; 4] = [
+    [81, 78, 244],   // pointer
+    [237, 188, 48],  // click_perfect
+    [129, 57, 33],   // click_good
+    [43, 19, 11],    // click_bad
+];
+
 fn buf_to_mat(buf: Vec<u32>, width: i32, height: i32) -> opencv::Result<Mat> {
     // Convert buf into a Vec for BGRA format
     let mut bgra_buf: Vec<u8> = Vec::with_capacity((width * height * 4) as usize);
@@ -37,7 +44,7 @@ fn buf_to_mat(buf: Vec<u32>, width: i32, height: i32) -> opencv::Result<Mat> {
             core::Mat_AUTO_STEP,
         )?
     };
-    
+
     let mat = mat.clone();
 
     // Convert to BGR
@@ -55,7 +62,7 @@ fn screenshot() -> opencv::Result<Mat> {
     }
 
     let mut rect: RECT = unsafe { zeroed() };
-    
+
     unsafe {
         if GetWindowRect(hwnd, &mut rect) == 0 {
             return Ok(Mat::default());
@@ -131,7 +138,7 @@ fn screenshot() -> opencv::Result<Mat> {
             &mut bitmap_info,
             DIB_RGB_COLORS,
         );
-        
+
         // Cleanup
         SelectObject(hdc_mem, old_bitmap);
         DeleteObject(hbitmap as _);
@@ -149,7 +156,7 @@ fn show_image(image: &Mat) -> opencv::Result<()> {
     Ok(())
 }
 
-fn filter_image_by_bgr(image: &Mat, bgr_values: &[[u8; 3]], tolerance: i32) -> opencv::Result<Mat> {
+fn filter_image_by_bgr(image: &Mat, bgr_values: &[[i32; 3]; 4], tolerance: i32) -> opencv::Result<Mat> {
     let mut mask = Mat::zeros(image.rows(), image.cols(), core::CV_8UC1)?.to_mat()?;
 
     for bgr in bgr_values {
@@ -177,13 +184,13 @@ fn filter_image_by_bgr(image: &Mat, bgr_values: &[[u8; 3]], tolerance: i32) -> o
     Ok(result)
 }
 
-fn count_bgr_values(image: &BoxedRef<Mat>, bgr_values: &[[u8; 3]], tolerance: u8) -> opencv::Result<Vec<i32>> {
+fn count_bgr_values(image: &BoxedRef<Mat>, bgr_values: &[[i32; 3]; 4], tolerance: u8) -> opencv::Result<Vec<i32>> {
     let mut counts = vec![0; bgr_values.len()];
 
     for row in 0..image.rows() {
         for col in 0..image.cols() {
             let pixel = image.at_2d::<Vec3b>(row, col)?;
-            
+
             for (index, &target_bgr) in bgr_values.iter().enumerate() {
                 if (pixel[0] as i16 - target_bgr[0] as i16).abs() <= tolerance as i16 &&
                     (pixel[1] as i16 - target_bgr[1] as i16).abs() <= tolerance as i16 &&
@@ -199,21 +206,14 @@ fn count_bgr_values(image: &BoxedRef<Mat>, bgr_values: &[[u8; 3]], tolerance: u8
 }
 
 fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
-    let bgr_values = [
-        [237, 188, 48],  // click_perfect
-        [129, 57, 33],   // click_good
-        [43, 19, 11],    // click_bad
-        [81, 78, 244],   // pointer
-    ];
+    let mut filtered_image = filter_image_by_bgr(&image, &BGR_VALUES, 3)?;
 
-    let mut filtered_image = filter_image_by_bgr(&image, &bgr_values, 3)?;
-    
     let kernel4x4 = imgproc::get_structuring_element(
         imgproc::MORPH_RECT,
         core::Size::new(4, 4),
         Point::new(-1, -1),
     )?;
-    
+
     let mut temp_filtered_image = Mat::default();
     imgproc::morphology_ex(
         &filtered_image,
@@ -226,15 +226,15 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
         Scalar::default(),
     )?;
     filtered_image = temp_filtered_image;
-    
+
     let mut gray = Mat::default();
     imgproc::cvt_color(&filtered_image, &mut gray, imgproc::COLOR_BGR2GRAY, 0)?;
-    
+
     let mut binary;
     let mut binary_temp = Mat::default();
     imgproc::threshold(&gray, &mut binary_temp, 1.0, 255.0, imgproc::THRESH_BINARY)?;
     binary = binary_temp; // Update binary
-    
+
     let mut dilated_binary = Mat::default();
     let kernel5x5 = imgproc::get_structuring_element(
         imgproc::MORPH_RECT,
@@ -251,7 +251,7 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
         Scalar::default(),
     )?;
     binary = dilated_binary;
-    
+
     let mut contours = Vector::<Vector<Point>>::new();
     imgproc::find_contours(
         &binary,
@@ -260,14 +260,14 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
         imgproc::CHAIN_APPROX_SIMPLE,
         Point::new(0, 0),
     )?;
-    
+
     let mut areas: Vec<(usize, f64)> = contours
         .iter()
         .enumerate()
         .map(|(i, c)| (i, imgproc::contour_area(&c, false).unwrap()))
         .collect();
     areas.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    
+
     for (idx, _) in areas {
         let rect = imgproc::bounding_rect(&contours.get(idx)?)?;
         let area = rect.area();
@@ -277,12 +277,12 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
         let aspect_ratio = rect.width as f64 / rect.height as f64;
         if (5.3..=6.4).contains(&aspect_ratio) {
             let clash_rect = image.roi(rect)?;
-            
-            let bgr_counts = count_bgr_values(&clash_rect, &bgr_values, 3)?;
-            if bgr_counts[0] > (0.01 * area as f32) as i32 &&  // click_perfect
-                bgr_counts[1] > (0.03 * area as f32) as i32 && // click_good
-                bgr_counts[2] > (0.4 * area as f32) as i32 &&  // click_bad
-                bgr_counts[3] > (0.001 * area as f32) as i32 { // pointer
+
+            let bgr_counts = count_bgr_values(&clash_rect, &BGR_VALUES, 3)?;
+            if bgr_counts[0] > (0.001 * area as f32) as i32 && // pointer
+                bgr_counts[1] > (0.01 * area as f32) as i32 && // click_perfect
+                bgr_counts[2] > (0.03 * area as f32) as i32 && // click_good
+                bgr_counts[3] > (0.4 * area as f32) as i32 {   // click_bad 
                 return Ok(Some((rect.x, rect.y, rect.width, rect.height)));
             }
         }
@@ -291,24 +291,35 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
     Ok(None)
 }
 
-fn get_pixel_vec(rect: Rect) -> opencv::Result<Vec<Vec3b>> {
+fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
     let image = screenshot()?;
+    let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
     let image = image.roi(rect)?.try_clone()?;
-    
+
     let mut pixels = Vec::new();
-    for row in 0..image.rows() {
-        for col in 0..image.cols() {
-            let pixel = image.at_2d::<Vec3b>(row, col)?;
-            pixels.push(*pixel);
+    for col in 0..image.cols() {
+        let pixel = image.at_2d::<Vec3b>(0, col)?;
+        let mut found = false;
+        for (index, &target_bgr) in BGR_VALUES.iter().enumerate() {
+            if pixel[0] == target_bgr[0] as u8 &&
+                pixel[1] == target_bgr[1] as u8 &&
+                pixel[2] == target_bgr[2] as u8 {
+                pixels.push(index);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            pixels.push(9);
         }
     }
-    
+
     Ok(pixels)
 }
 
 fn main() -> opencv::Result<()> {
     // let start = Instant::now();
-    // 
+    //
     // for i in 2936..3474 {
     //     let image_path = format!("clash01/frame_{}.png", i);
     //     let image = imgcodecs::imread(&image_path, imgcodecs::IMREAD_COLOR)?;
@@ -317,11 +328,11 @@ fn main() -> opencv::Result<()> {
     //     println!("Processing frame {}", i);
     //     println!("{:?}", find_clash(&image)?);
     // }
-    // 
+    //
     // let duration = start.elapsed();
     // println!("Time elapsed: {:?}", duration);
     // println!("Frames per second: {}", (3474 - 2936) as f64 / duration.as_secs_f64());
-    
+
     // let image = imgcodecs::imread("clashmeter/frame_38.png", imgcodecs::IMREAD_COLOR)?;
     // // crop image using find_clash
     // match find_clash(&image)? {
@@ -332,7 +343,7 @@ fn main() -> opencv::Result<()> {
     //     }
     //     None => {}
     // }
-    
+
     loop {
         let image = screenshot()?;
         if image.empty() {
@@ -341,8 +352,8 @@ fn main() -> opencv::Result<()> {
         }
 
         let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
-        
-        match find_clash(&image)? { 
+
+        match find_clash(&image)? {
             Some((x, y, w, h)) => {
                 println!("Detected clash");
 
