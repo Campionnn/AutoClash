@@ -10,6 +10,7 @@ use opencv::{core::{self, Mat, MatTraitConst, Point, Scalar, Vector, BORDER_DEFA
 use std::time::Instant;
 use opencv::boxed_ref::BoxedRef;
 use opencv::core::{Rect, Vec3b};
+use enigo::{Enigo, Button, Settings, Direction, Mouse};
 
 const BGR_VALUES: [[i32; 3]; 4] = [
     [81, 78, 244],   // pointer
@@ -421,7 +422,7 @@ fn infer_regions(mut sequence: Vec<usize>) -> Vec<usize> {
 
 fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
     let image = screenshot()?;
-    let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
+    // let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
     let image = image.roi(rect)?.try_clone()?;
 
     let mut pixels = Vec::new();
@@ -447,32 +448,14 @@ fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
     Ok(pixels)
 }
 
-fn main() -> opencv::Result<()> {
-    // let start = Instant::now();
-    //
-    // for i in 2936..3474 {
-    //     let image_path = format!("clash01/frame_{}.png", i);
-    //     let image = imgcodecs::imread(&image_path, imgcodecs::IMREAD_COLOR)?;
-    //     let mut resized_image = Mat::default();
-    //     imgproc::resize(&image, &mut resized_image, core::Size::new(1920, 1080), 0.0, 0.0, imgproc::INTER_LINEAR)?;
-    //     println!("Processing frame {}", i);
-    //     println!("{:?}", find_clash(&image)?);
-    // }
-    //
-    // let duration = start.elapsed();
-    // println!("Time elapsed: {:?}", duration);
-    // println!("Frames per second: {}", (3474 - 2936) as f64 / duration.as_secs_f64());
+fn find_indices(bar: &[usize], value: usize) -> Option<(usize, usize)> {
+    let start = bar.iter().position(|&x| x == value)?;
+    let end = bar.iter().rposition(|&x| x == value)?;
+    Some((start, end))
+}
 
-    // let image = imgcodecs::imread("clashmeter/frame_38.png", imgcodecs::IMREAD_COLOR)?;
-    // // crop image using find_clash
-    // match find_clash(&image)? {
-    //     Some((x, y, w, h)) => {
-    //         let rect = Rect::new(x, y, w, h);
-    //         let cropped_image = image.roi(rect)?.try_clone();
-    //         show_image(&cropped_image?)?;
-    //     }
-    //     None => {}
-    // }
+fn main() -> opencv::Result<()> {
+    let mut enigo = Enigo::new(&Settings::default()).unwrap();
 
     loop {
         let image = screenshot()?;
@@ -481,7 +464,7 @@ fn main() -> opencv::Result<()> {
             continue;
         }
 
-        let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
+        // let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
 
         match find_clash(&image)? {
             Some((x, y, w, h)) => {
@@ -489,8 +472,60 @@ fn main() -> opencv::Result<()> {
 
                 let rect = Rect::new(x, y + h / 2, w, 1);
 
-                println!("{:?}", get_pixel_vec(rect)?);
-                break;
+                let meter_vec = get_pixel_vec(rect)?;
+                if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+                    meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                    continue;
+                }
+
+                let mut velocity = 0.0;
+                let mut direction = 1.0; // 1 for right, -1 for left
+                let mut last_click_successful = false;
+
+                // Initialize positions and time
+                let (start, end) = find_indices(&meter_vec, 0).unwrap();
+                let mut current_pointer_pos;
+                let mut prev_pointer_pos = (start + end) / 2;
+                let mut current_group_start;
+                let mut current_group_end;
+                let mut prev_time = Instant::now();
+
+                loop {
+                    let meter_vec = get_pixel_vec(rect)?;
+                    if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+                        meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                        continue;
+                    }
+
+                    // Find the center of the pointer
+                    let (start, end) = find_indices(&meter_vec, 0).unwrap();
+                    current_pointer_pos = (start + end) / 2;
+
+                    // Check for wall bounce
+                    if current_pointer_pos == 0 || current_pointer_pos == (meter_vec.len() - 1) {
+                        direction *= -1.0;
+                    } else if last_click_successful {
+                        // Update velocity only after a successful click
+                        velocity = ((current_pointer_pos as f64 - prev_pointer_pos as f64).abs())
+                            / prev_time.elapsed().as_millis() as f64;
+                        last_click_successful = false; // Reset the flag
+                    }
+
+                    // Predict pointer position using velocity
+                    let predicted_pos = current_pointer_pos as f64 + velocity * direction;
+                    println!("Predicted Position: {}", predicted_pos);
+
+                    // Find the perfect region
+                    let (start, end) = find_indices(&meter_vec, 1).unwrap();
+                    current_group_start = start;
+                    current_group_end = end;
+                    let current_group_center = (current_group_start + current_group_end) / 2;
+
+                    prev_pointer_pos = current_pointer_pos;
+                    prev_time = Instant::now();
+
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
             None => {}
         }
