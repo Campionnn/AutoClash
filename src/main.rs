@@ -468,69 +468,157 @@ fn main() -> opencv::Result<()> {
 
         match find_clash(&image)? {
             Some((x, y, w, h)) => {
-                println!("Detected clash");
-
                 let rect = Rect::new(x, y + h / 2, w, 1);
 
                 let meter_vec = get_pixel_vec(rect)?;
                 if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
                     meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                     continue;
                 }
 
-                let mut velocity = 0.0;
-                let mut direction = 1.0; // 1 for right, -1 for left
-                let mut last_click_successful = false;
-
-                // Initialize positions and time
-                let (start, end) = find_indices(&meter_vec, 0).unwrap();
-                let mut current_pointer_pos;
-                let mut prev_pointer_pos = (start + end) / 2;
-                let mut current_group_start;
-                let mut current_group_end;
+                // Determine velocity in pixels per millisecond
+                let mut velocities = Vec::new();
+                let mut prev_pointer_pos = 0;
                 let mut prev_time = Instant::now();
-
                 loop {
                     let meter_vec = get_pixel_vec(rect)?;
                     if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
                         meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
-
-                    // Find the center of the pointer
                     let (start, end) = find_indices(&meter_vec, 0).unwrap();
-                    current_pointer_pos = (start + end) / 2;
+                    let current_pointer_pos = (start + end) / 2;
 
-                    // Check for wall bounce
-                    if current_pointer_pos == 0 || current_pointer_pos == (meter_vec.len() - 1) {
-                        direction *= -1.0;
-                    } else if last_click_successful {
-                        // Update velocity only after a successful click
-                        velocity = ((current_pointer_pos as f64 - prev_pointer_pos as f64).abs())
-                            / prev_time.elapsed().as_millis() as f64;
-                        last_click_successful = false; // Reset the flag
+                    let velocity = ((current_pointer_pos as f64 - prev_pointer_pos as f64).abs())
+                        / prev_time.elapsed().as_millis() as f64;
+                    velocities.push(velocity);
+
+                    if velocities.len() == 10 {
+                        break;
                     }
-
-                    // Predict pointer position using velocity
-                    let predicted_pos = current_pointer_pos as f64 + velocity * direction;
-                    println!("Predicted Position: {}", predicted_pos);
-
-                    // Find the perfect region
-                    let (start, end) = find_indices(&meter_vec, 1).unwrap();
-                    current_group_start = start;
-                    current_group_end = end;
-                    let current_group_center = (current_group_start + current_group_end) / 2;
 
                     prev_pointer_pos = current_pointer_pos;
                     prev_time = Instant::now();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
 
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                velocities.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let velocity = velocities[4..8].iter().sum::<f64>() / 4.0;
+
+                // Wait until moving towards the perfect region
+                loop {
+                    let meter_vec = get_pixel_vec(rect)?;
+                    if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+                        meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    let prev_pointer_pos = (meter_vec.iter().position(|&x| x == 0).unwrap() +
+                        meter_vec.iter().rposition(|&x| x == 0).unwrap()) / 2;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let meter_vec = get_pixel_vec(rect)?;
+                    if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+                        meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    let current_pointer_pos = (meter_vec.iter().position(|&x| x == 0).unwrap() +
+                        meter_vec.iter().rposition(|&x| x == 0).unwrap()) / 2;
+                    let direction = if current_pointer_pos > prev_pointer_pos { 1.0 } else { -1.0 };
+
+                    // Determine if moving towards the perfect region
+                    let (start, end) = find_indices(&meter_vec, 1).unwrap();
+                    let current_group_center = (start + end) / 2;
+
+                    let moving_towards = if direction == 1.0 {
+                        current_pointer_pos > current_group_center
+                    } else {
+                        current_pointer_pos < current_group_center
+                    };
+
+                    if moving_towards {
+                        break;
+                    }
+
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+
+                // Find distance to the perfect region and calculate time to click
+                let meter_vec = get_pixel_vec(rect)?;
+                if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+                    meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let (start, end) = find_indices(&meter_vec, 0).unwrap();
+                let current_pointer_pos = (start + end) / 2;
+                let (start, end) = find_indices(&meter_vec, 1).unwrap();
+                let current_group_center = (start + end) / 2;
+                let distance = (current_pointer_pos as f64 - current_group_center as f64).abs();
+                let time_to_click = distance / velocity;
+                println!("Time to Click: {}", time_to_click);
+
+                if time_to_click < 500.0 {
+                    std::thread::sleep(std::time::Duration::from_millis(time_to_click as u64));
+                    enigo.button(Button::Left, Direction::Click);
                 }
             }
             None => {}
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     Ok(())
 }
+
+
+//                 let mut velocity = 0.0;
+//                 let mut direction = 1.0; // 1 for right, -1 for left
+//                 let mut last_click_successful = false;
+//
+//                 // Initialize positions and time
+//                 let (start, end) = find_indices(&meter_vec, 0).unwrap();
+//                 let mut current_pointer_pos;
+//                 let mut prev_pointer_pos = (start + end) / 2;
+//                 let mut current_group_start;
+//                 let mut current_group_end;
+//                 let mut prev_time = Instant::now();
+//
+//                 loop {
+//                     let meter_vec = get_pixel_vec(rect)?;
+//                     if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+//                         meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+//                         continue;
+//                     }
+//
+//                     // Find the center of the pointer
+//                     let (start, end) = find_indices(&meter_vec, 0).unwrap();
+//                     current_pointer_pos = (start + end) / 2;
+//
+//                     // Check for wall bounce
+//                     if current_pointer_pos == 0 || current_pointer_pos == (meter_vec.len() - 1) {
+//                         direction *= -1.0;
+//                     } else if last_click_successful {
+//                         // Update velocity only after a successful click
+//                         velocity = ((current_pointer_pos as f64 - prev_pointer_pos as f64).abs())
+//                             / prev_time.elapsed().as_millis() as f64;
+//                         last_click_successful = false; // Reset the flag
+//                     }
+//
+//                     // Predict pointer position using velocity
+//                     let predicted_pos = current_pointer_pos as f64 + velocity * direction;
+//                     println!("Predicted Position: {}", predicted_pos);
+//
+//                     // Find the perfect region
+//                     let (start, end) = find_indices(&meter_vec, 1).unwrap();
+//                     current_group_start = start;
+//                     current_group_end = end;
+//                     let current_group_center = (current_group_start + current_group_end) / 2;
+//
+//                     prev_pointer_pos = current_pointer_pos;
+//                     prev_time = Instant::now();
+//
+//                     std::thread::sleep(std::time::Duration::from_millis(100));
+//                 }
