@@ -475,8 +475,7 @@ fn main() -> opencv::Result<()> {
                     }
 
                     let meter_vec = get_pixel_vec(rect)?;
-                    if meter_vec.iter().filter(|&&x| x == 2).count() == 0 ||
-                        meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                    if meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         count += 1;
                         continue;
@@ -491,20 +490,24 @@ fn main() -> opencv::Result<()> {
 
                     let click_start;
                     let click_end;
-                    if ones as f64 / meter_vec.len() as f64 > 0.03 {
+                    if ones as f64 / meter_vec.len() as f64 > 0.04 {
                         let (start, end) = find_indices(&meter_vec, 1).unwrap();
                         click_start = start;
                         click_end = end;
                     } else {
-                        println!("using 2s");
-                        let (start, end) = find_indices(&meter_vec, 2).unwrap();
-                        let length = end - start;
-                        click_start = start + length / 4;
-                        click_end = end - length / 4;
+                        let (start_two, end) = find_indices(&meter_vec, 2).unwrap();
+                        if meter_vec.iter().filter(|&&x| x == 1).count() != 0 {
+                            let start_one = find_indices(&meter_vec, 1).unwrap().0;
+                            click_start = if start_two < start_one { start_two } else { start_one };
+                            click_end = end;
+                        } else {
+                            click_start = start_two;
+                            click_end = end;
+                        }
                     }
                     if current_pointer_pos > click_start && current_pointer_pos < click_end {
                         enigo.button(Button::Left, Direction::Click).expect("");
-                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                 }
             }
