@@ -7,7 +7,6 @@ use winapi::um::wingdi::{
 use std::ptr::null_mut;
 use std::mem::zeroed;
 use opencv::{core::{self, Mat, MatTraitConst, Point, Scalar, Vector, BORDER_DEFAULT}, imgproc, prelude::*};
-use opencv::boxed_ref::BoxedRef;
 use opencv::core::{Rect, Vec3b};
 use enigo::{Enigo, Button, Settings, Direction, Mouse};
 
@@ -17,6 +16,15 @@ const BGR_VALUES: [[i32; 3]; 4] = [
     [129, 57, 33],   // click_good
     [43, 19, 11],    // click_bad
 ];
+
+const POINTER_LOW: [i32; 3] = [60, 58, 148];
+const POINTER_HIGH: [i32; 3] = [81, 78, 244];
+const PERFECT_LOW: [i32; 3] = [150, 124, 30];
+const PERFECT_HIGH: [i32; 3] = [237, 188, 50];
+const GOOD_LOW: [i32; 3] = [92, 41, 24];
+const GOOD_HIGH: [i32; 3] = [129, 57, 33];
+const BAD_LOW: [i32; 3] = [39, 17, 10];
+const BAD_HIGH: [i32; 3] = [43, 19, 11];
 
 fn buf_to_mat(buf: Vec<u32>, width: i32, height: i32) -> opencv::Result<Mat> {
     // Convert buf into a Vec for BGRA format
@@ -150,12 +158,6 @@ fn screenshot() -> opencv::Result<Mat> {
     }
 }
 
-// fn show_image(image: &Mat) -> opencv::Result<()> {
-//     highgui::imshow("Image", image)?;
-//     highgui::wait_key(0)?;
-//     Ok(())
-// }
-
 fn filter_image_by_bgr(image: &Mat, bgr_values: &[[i32; 3]; 4], tolerance: i32) -> opencv::Result<Mat> {
     let mut mask = Mat::zeros(image.rows(), image.cols(), core::CV_8UC1)?.to_mat()?;
 
@@ -182,27 +184,6 @@ fn filter_image_by_bgr(image: &Mat, bgr_values: &[[i32; 3]; 4], tolerance: i32) 
     let mut result = Mat::default();
     core::bitwise_and(&image, &image, &mut result, &mask)?;
     Ok(result)
-}
-
-fn count_bgr_values(image: &BoxedRef<Mat>, bgr_values: &[[i32; 3]; 4], tolerance: u8) -> opencv::Result<Vec<i32>> {
-    let mut counts = vec![0; bgr_values.len()];
-
-    for row in 0..image.rows() {
-        for col in 0..image.cols() {
-            let pixel = image.at_2d::<Vec3b>(row, col)?;
-
-            for (index, &target_bgr) in bgr_values.iter().enumerate() {
-                if (pixel[0] as i16 - target_bgr[0] as i16).abs() <= tolerance as i16 &&
-                    (pixel[1] as i16 - target_bgr[1] as i16).abs() <= tolerance as i16 &&
-                    (pixel[2] as i16 - target_bgr[2] as i16).abs() <= tolerance as i16 {
-                    counts[index] += 1;
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(counts)
 }
 
 fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
@@ -277,12 +258,38 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
         let aspect_ratio = rect.width as f64 / rect.height as f64;
         if (5.3..=6.4).contains(&aspect_ratio) {
             let clash_rect = image.roi(rect)?;
-
-            let bgr_counts = count_bgr_values(&clash_rect, &BGR_VALUES, 3)?;
-            if bgr_counts[0] > (0.001 * area as f32) as i32 && // pointer
-                bgr_counts[1] > (0.01 * area as f32) as i32 && // click_perfect
-                bgr_counts[2] > (0.03 * area as f32) as i32 && // click_good
-                bgr_counts[3] > (0.4 * area as f32) as i32 {   // click_bad
+            
+            let clash_rect = clash_rect.roi(Rect::new(0, rect.height / 2, rect.width, 1))?;
+            
+            let mut pointer_count = 0;
+            let mut perfect_count = 0;
+            let mut good_count = 0;
+            let mut bad_count = 0;
+            
+            let image = clash_rect.try_clone()?;
+            
+            for col in 0..image.cols() {
+                let pixel = image.at_2d::<Vec3b>(0, col)?;
+                if pixel[0] >= POINTER_LOW[0] as u8 && pixel[0] <= POINTER_HIGH[0] as u8 &&
+                    pixel[1] >= POINTER_LOW[1] as u8 && pixel[1] <= POINTER_HIGH[1] as u8 &&
+                    pixel[2] >= POINTER_LOW[2] as u8 && pixel[2] <= POINTER_HIGH[2] as u8 {
+                    pointer_count += 1;
+                } else if pixel[0] >= PERFECT_LOW[0] as u8 && pixel[0] <= PERFECT_HIGH[0] as u8 &&
+                    pixel[1] >= PERFECT_LOW[1] as u8 && pixel[1] <= PERFECT_HIGH[1] as u8 &&
+                    pixel[2] >= PERFECT_LOW[2] as u8 && pixel[2] <= PERFECT_HIGH[2] as u8 {
+                    perfect_count += 1;
+                } else if pixel[0] >= GOOD_LOW[0] as u8 && pixel[0] <= GOOD_HIGH[0] as u8 &&
+                    pixel[1] >= GOOD_LOW[1] as u8 && pixel[1] <= GOOD_HIGH[1] as u8 &&
+                    pixel[2] >= GOOD_LOW[2] as u8 && pixel[2] <= GOOD_HIGH[2] as u8 {
+                    good_count += 1;
+                } else if pixel[0] >= BAD_LOW[0] as u8 && pixel[0] <= BAD_HIGH[0] as u8 &&
+                    pixel[1] >= BAD_LOW[1] as u8 && pixel[1] <= BAD_HIGH[1] as u8 &&
+                    pixel[2] >= BAD_LOW[2] as u8 && pixel[2] <= BAD_HIGH[2] as u8 {
+                    bad_count += 1;
+                }
+            }
+            
+            if pointer_count > 0 && perfect_count > 2 && good_count > 5 && bad_count > image.size()?.width / 3 {
                 return Ok(Some((rect.x, rect.y, rect.width, rect.height)));
             }
         }
@@ -291,158 +298,39 @@ fn find_clash(image: &Mat) -> opencv::Result<Option<(i32, i32, i32, i32)>> {
     Ok(None)
 }
 
-fn infer_regions(mut sequence: Vec<usize>) -> Vec<usize> {
-    let mut changed = true;
-
-    // Keep iterating until no more changes can be made
-    while changed {
-        changed = false;
-        let len = sequence.len();
-        let mut updates: Vec<(usize, usize)> = Vec::new();
-
-        // Handle edges first if they contain 9's
-        if sequence[0] == 9 {
-            // Find first non-9 value from left
-            for i in 1..len {
-                if sequence[i] != 9 {
-                    updates.push((0, sequence[i]));
-                    changed = true;
-                    break;
-                }
-            }
-        }
-
-        if sequence[len-1] == 9 {
-            // Find first non-9 value from right
-            for i in (0..len-1).rev() {
-                if sequence[i] != 9 {
-                    updates.push((len-1, sequence[i]));
-                    changed = true;
-                    break;
-                }
-            }
-        }
-
-        // Scan through the sequence looking for 9's
-        let mut i = 1;
-        while i < len-1 {
-            if sequence[i] == 9 {
-                // Count consecutive 9's
-                let mut nine_count = 1;
-                let start_pos = i;
-                while i + nine_count < len && sequence[i + nine_count] == 9 {
-                    nine_count += 1;
-                }
-
-                // Handle single 9
-                if nine_count == 1 {
-                    // Look left for the nearest non-9 value
-                    for j in (0..start_pos).rev() {
-                        if sequence[j] != 9 {
-                            updates.push((start_pos, sequence[j]));
-                            changed = true;
-                            break;
-                        }
-                    }
-                    i += 1;
-                    continue;
-                }
-
-                // Find left and right values for groups of 9's
-                let mut left_value = None;
-                let mut right_value = None;
-
-                // Look left
-                for j in (0..start_pos).rev() {
-                    if sequence[j] != 9 {
-                        left_value = Some(sequence[j]);
-                        break;
-                    }
-                }
-
-                // Look right
-                for j in (start_pos + nine_count)..len {
-                    if sequence[j] != 9 {
-                        right_value = Some(sequence[j]);
-                        break;
-                    }
-                }
-
-                // Fill in values based on available sides
-                match (left_value, right_value) {
-                    (Some(left), Some(right)) => {
-                        // For odd number of 9's, fill all but the last one
-                        let fill_count = if nine_count % 2 == 1 {
-                            nine_count - 1
-                        } else {
-                            nine_count
-                        };
-
-                        let mid_point = start_pos + fill_count / 2;
-
-                        // Fill from left to midpoint
-                        for j in start_pos..mid_point {
-                            updates.push((j, left));
-                            changed = true;
-                        }
-
-                        // Fill from right to midpoint (if even count)
-                        if nine_count % 2 == 0 {
-                            for j in mid_point..start_pos + fill_count {
-                                updates.push((j, right));
-                                changed = true;
-                            }
-                        }
-                    },
-                    (Some(value), None) | (None, Some(value)) => {
-                        // If only one side has a value, use it for all positions
-                        for j in 0..nine_count {
-                            updates.push((start_pos + j, value));
-                            changed = true;
-                        }
-                    },
-                    (None, None) => {} // Can't infer any values
-                }
-
-                i += nine_count;
-                continue;
-            }
-            i += 1;
-        }
-
-        // Apply all updates after scanning
-        for (index, value) in updates {
-            sequence[index] = value;
-        }
-    }
-
-    sequence
-}
-
 fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
     let image = screenshot()?;
-    // let image = imgcodecs::imread("screenshot2.png", imgcodecs::IMREAD_COLOR)?;
     let image = image.roi(rect)?.try_clone()?;
 
     let mut pixels = Vec::new();
     for col in 0..image.cols() {
         let pixel = image.at_2d::<Vec3b>(0, col)?;
         let mut found = false;
-        for (index, &target_bgr) in BGR_VALUES.iter().enumerate() {
-            if pixel[0] == target_bgr[0] as u8 &&
-                pixel[1] == target_bgr[1] as u8 &&
-                pixel[2] == target_bgr[2] as u8 {
-                pixels.push(index);
-                found = true;
-                break;
-            }
+        if pixel[0] >= POINTER_LOW[0] as u8 && pixel[0] <= POINTER_HIGH[0] as u8 &&
+            pixel[1] >= POINTER_LOW[1] as u8 && pixel[1] <= POINTER_HIGH[1] as u8 &&
+            pixel[2] >= POINTER_LOW[2] as u8 && pixel[2] <= POINTER_HIGH[2] as u8 {
+            pixels.push(0);
+            found = true;
+        } else if pixel[0] >= PERFECT_LOW[0] as u8 && pixel[0] <= PERFECT_HIGH[0] as u8 &&
+            pixel[1] >= PERFECT_LOW[1] as u8 && pixel[1] <= PERFECT_HIGH[1] as u8 &&
+            pixel[2] >= PERFECT_LOW[2] as u8 && pixel[2] <= PERFECT_HIGH[2] as u8 {
+            pixels.push(1);
+            found = true;
+        } else if pixel[0] >= GOOD_LOW[0] as u8 && pixel[0] <= GOOD_HIGH[0] as u8 &&
+            pixel[1] >= GOOD_LOW[1] as u8 && pixel[1] <= GOOD_HIGH[1] as u8 &&
+            pixel[2] >= GOOD_LOW[2] as u8 && pixel[2] <= GOOD_HIGH[2] as u8 {
+            pixels.push(2);
+            found = true;
+        } else if pixel[0] >= BAD_LOW[0] as u8 && pixel[0] <= BAD_HIGH[0] as u8 &&
+            pixel[1] >= BAD_LOW[1] as u8 && pixel[1] <= BAD_HIGH[1] as u8 &&
+            pixel[2] >= BAD_LOW[2] as u8 && pixel[2] <= BAD_HIGH[2] as u8 {
+            pixels.push(3);
+            found = true;
         }
         if !found {
             pixels.push(9);
         }
     }
-
-    pixels = infer_regions(pixels);
 
     Ok(pixels)
 }
@@ -455,6 +343,8 @@ fn find_indices(bar: &[usize], value: usize) -> Option<(usize, usize)> {
 
 fn main() -> opencv::Result<()> {
     let mut enigo = Enigo::new(&Settings::default()).unwrap();
+    println!("Waiting for domain clash to start");
+    
     loop {
         let image = screenshot()?;
         if image.empty() {
@@ -468,6 +358,8 @@ fn main() -> opencv::Result<()> {
                 let rect = Rect::new(x, y + h / 2, w, 1);
 
                 let mut count = 0;
+                let mut prev_click_start = 0;
+                let mut prev_click_end = 0;
                 loop {
                     if count > 10 {
                         println!("Clash ended");
@@ -475,6 +367,7 @@ fn main() -> opencv::Result<()> {
                     }
 
                     let meter_vec = get_pixel_vec(rect)?;
+
                     if meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         count += 1;
@@ -486,28 +379,44 @@ fn main() -> opencv::Result<()> {
                     let current_pointer_pos = (start + end) / 2;
 
                     // Find the size of the regions
-                    let ones = meter_vec.iter().filter(|&&x| x == 1).count();
+                    if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
+                        meter_vec.iter().filter(|&&x| x == 2).count() == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    let (start, end) = find_indices(&meter_vec, 1).unwrap();
+                    let ones = end - start + 1;
 
                     let click_start;
                     let click_end;
-                    if ones as f64 / meter_vec.len() as f64 > 0.04 {
+                    if ones as f64 / meter_vec.len() as f64 > 0.05 {
                         let (start, end) = find_indices(&meter_vec, 1).unwrap();
                         click_start = start;
                         click_end = end;
                     } else {
-                        let (start_two, end) = find_indices(&meter_vec, 2).unwrap();
+                        let (start_two, end_two) = find_indices(&meter_vec, 2).unwrap();
                         if meter_vec.iter().filter(|&&x| x == 1).count() != 0 {
-                            let start_one = find_indices(&meter_vec, 1).unwrap().0;
+                            let (start_one, end_one) = find_indices(&meter_vec, 1).unwrap();
                             click_start = if start_two < start_one { start_two } else { start_one };
-                            click_end = end;
+                            click_end = if end_two > end_one { end_two } else { end_one };
                         } else {
                             click_start = start_two;
-                            click_end = end;
+                            click_end = end_two;
                         }
                     }
+                    
+                    if click_start == prev_click_start && click_end == prev_click_end {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    
                     if current_pointer_pos > click_start && current_pointer_pos < click_end {
                         enigo.button(Button::Left, Direction::Click).expect("");
+                        prev_click_start = click_start;
+                        prev_click_end = click_end;
                         std::thread::sleep(std::time::Duration::from_millis(50));
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
             }
