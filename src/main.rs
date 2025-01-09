@@ -404,17 +404,17 @@ fn main() -> opencv::Result<()> {
                             click_end = end_two;
                         }
                     }
-                    
+
                     if click_start == prev_click_start && click_end == prev_click_end {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         continue;
                     }
-                    
+
                     if current_pointer_pos > click_start && current_pointer_pos < click_end {
                         enigo.button(Button::Left, Direction::Click).expect("");
                         prev_click_start = click_start;
                         prev_click_end = click_end;
-                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        std::thread::sleep(std::time::Duration::from_millis(100));
                     } else {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
