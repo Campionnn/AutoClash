@@ -457,7 +457,7 @@ fn main() -> opencv::Result<()> {
                             current_pointer_pos - click_region_center
                         };
                     }
-                    
+
                     let time = (distance as f64 / speed) - 0.0;
 
                     if time < 200.0 {
