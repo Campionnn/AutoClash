@@ -6,8 +6,10 @@ use winapi::um::wingdi::{
 };
 use std::ptr::null_mut;
 use std::mem::zeroed;
-use opencv::{core::{self, Mat, MatTraitConst, Point, Scalar, Vector, BORDER_DEFAULT}, imgproc, prelude::*};
-use opencv::core::{Rect, Vec3b};
+use opencv::{core::{self, Mat, MatTraitConst, Point, Scalar, Vector, BORDER_DEFAULT}, imgproc, prelude::*,
+imgcodecs, highgui
+};
+use opencv::core::{Rect, Rect_, Vec3b};
 use enigo::{Enigo, Button, Settings, Direction, Mouse};
 
 const BGR_VALUES: [[i32; 3]; 4] = [
@@ -327,6 +329,10 @@ fn  get_pixel_vec(rect: Rect) -> opencv::Result<Vec<usize>> {
             pixels.push(3);
             found = true;
         }
+        else if pixel[0] >= 200 && pixel[1] >= 200 && pixel[2] >= 200 &&
+            (col as f64 / (image.cols() as f64) < 0.05 && col as f64 / (image.cols() as f64) > 0.95) {
+            found = true;
+        }
         if !found {
             pixels.push(9);
         }
@@ -341,14 +347,54 @@ fn find_indices(bar: &[usize], value: usize) -> Option<(usize, usize)> {
     Some((start, end))
 }
 
+fn find_pointer_pos(rect: Rect_<i32>, ended: &mut bool) -> opencv::Result<usize> {
+    let mut count = 0;
+    let mut pointer_start = 0;
+
+    loop {
+        if count > 10 {
+            *ended = true;
+            break;
+        }
+
+        let meter_vec = get_pixel_vec(rect)?;
+
+        if meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            count += 1;
+            continue;
+        }
+
+        let (start, end) = find_indices(&meter_vec, 0).unwrap();
+        pointer_start = (start + end) / 2;
+        break;
+    }
+
+    Ok(pointer_start)
+}
+
+fn find_speed(rect: Rect_<i32>, ended: &mut bool) -> opencv::Result<f64> {
+    let time1 = std::time::Instant::now();
+    let pos1 = find_pointer_pos(rect, &mut *ended)?;
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    let time2 = std::time::Instant::now();
+    let pos2 = find_pointer_pos(rect, &mut *ended)?;
+
+    let elapsed1 = time2.duration_since(time1).as_millis() as f64;
+    let speed1 = (pos2 as i32 - pos1 as i32) as f64 / elapsed1;
+
+    Ok(speed1)
+}
+
 fn main() -> opencv::Result<()> {
     let mut enigo = Enigo::new(&Settings::default()).unwrap();
     println!("Waiting for domain clash to start");
-    
+
     loop {
         let image = screenshot()?;
         if image.empty() {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(1000));
             continue;
         }
 
@@ -356,19 +402,35 @@ fn main() -> opencv::Result<()> {
             Some((x, y, w, h)) => {
                 println!("Detected Clash");
                 let rect = Rect::new(x, y + h / 2, w, 1);
+                // std::thread::sleep(std::time::Duration::from_millis(100));
 
                 let mut count = 0;
-                let mut prev_click_start = 0;
-                let mut prev_click_end = 0;
+                let mut ended = false;
+                let mut speeds: Vec<f64> = Vec::new();
+
                 loop {
                     if count > 10 {
                         println!("Clash ended");
                         break;
                     }
 
+                    let velocity = find_speed(rect, &mut ended)?;
+                    speeds.push(velocity.abs());
+
+                    if ended {
+                        println!("Clash ended");
+                        break;
+                    }
+
+                    let mut speeds = speeds.clone();
+                    speeds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    let speed = speeds[speeds.len() / 2];
+                    let velocity = if velocity > 0.0 { speed } else { -speed };
+
                     let meter_vec = get_pixel_vec(rect)?;
 
-                    if meter_vec.iter().filter(|&&x| x == 0).count() == 0 {
+                    if meter_vec.iter().filter(|&&x| x == 0).count() == 0 ||
+                        meter_vec.iter().filter(|&&x| x == 1).count() == 0 {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                         count += 1;
                         continue;
@@ -376,47 +438,34 @@ fn main() -> opencv::Result<()> {
                     count = 0;
 
                     let (start, end) = find_indices(&meter_vec, 0).unwrap();
-                    let current_pointer_pos = (start + end) / 2;
+                    let current_pointer_pos = (start as i32 + end as i32) / 2;
 
-                    // Find the size of the regions
-                    if meter_vec.iter().filter(|&&x| x == 1).count() == 0 ||
-                        meter_vec.iter().filter(|&&x| x == 2).count() == 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        continue;
-                    }
                     let (start, end) = find_indices(&meter_vec, 1).unwrap();
-                    let ones = end - start + 1;
+                    let click_region_center = (start as i32 + end as i32) / 2;
 
-                    let click_start;
-                    let click_end;
-                    if ones as f64 / meter_vec.len() as f64 > 0.05 {
-                        let (start, end) = find_indices(&meter_vec, 1).unwrap();
-                        click_start = start;
-                        click_end = end;
-                    } else {
-                        let (start_two, end_two) = find_indices(&meter_vec, 2).unwrap();
-                        if meter_vec.iter().filter(|&&x| x == 1).count() != 0 {
-                            let (start_one, end_one) = find_indices(&meter_vec, 1).unwrap();
-                            click_start = if start_two < start_one { start_two } else { start_one };
-                            click_end = if end_two > end_one { end_two } else { end_one };
+                    let distance;
+                    if current_pointer_pos < click_region_center {
+                        distance = if velocity > 0.0 {
+                            click_region_center - current_pointer_pos
                         } else {
-                            click_start = start_two;
-                            click_end = end_two;
-                        }
-                    }
-
-                    if click_start == prev_click_start && click_end == prev_click_end {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        continue;
-                    }
-
-                    if current_pointer_pos > click_start && current_pointer_pos < click_end {
-                        enigo.button(Button::Left, Direction::Click).expect("");
-                        prev_click_start = click_start;
-                        prev_click_end = click_end;
-                        std::thread::sleep(std::time::Duration::from_millis(100));
+                            (click_region_center - current_pointer_pos) + (current_pointer_pos * 2)
+                        };
                     } else {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        distance = if velocity > 0.0 {
+                            (current_pointer_pos - click_region_center) + ((meter_vec.len() as i32 - current_pointer_pos) * 2)
+                        } else {
+                            current_pointer_pos - click_region_center
+                        };
+                    }
+                    
+                    let time = (distance as f64 / speed) - 0.0;
+
+                    if time < 200.0 {
+                        std::thread::sleep(std::time::Duration::from_millis(time as u64));
+                        println!("speed: {}, velocity: {}, distance: {}", speed, velocity, distance);
+                        println!("time: {}", time);
+                        enigo.button(Button::Left, Direction::Click).expect("");
+                        speeds.clear();
                     }
                 }
             }
